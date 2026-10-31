@@ -1,0 +1,85 @@
+package plc.project.evaluator;
+
+import com.google.common.base.Preconditions;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * IMPORTANT: This is an API file and should not be modified by your submission.
+ */
+public final class Scope {
+
+    private final Scope parent;
+    private final Map<String, RuntimeValue> variables = new LinkedHashMap<>();
+
+    public Scope(Scope parent) {
+        this.parent = parent;
+    }
+
+    /**
+     * Returns the value of a variable declared specifically in the *current*
+     * scope, i.e. does not perform "full" scope resolution.
+     */
+    public Optional<RuntimeValue> current(String name) {
+        return Optional.ofNullable(variables.get(name));
+    }
+
+    /**
+     * Returns the value of a variable defined in this scope, i.e. includes
+     * "inherited" values from parent scopes and thus performs "full" scope resolution.
+     */
+    public Optional<RuntimeValue> resolve(String name) {
+        if (variables.containsKey(name)) {
+            return Optional.of(variables.get(name));
+        } else if (parent != null) {
+            return parent.resolve(name);
+        } else {
+            return Optional.empty();
+        }
+    }
+
+    public void define(String name, RuntimeValue object) {
+        Preconditions.checkState(!variables.containsKey(name));
+        variables.put(name, object);
+    }
+
+    public void assign(String name, RuntimeValue object) {
+        if (variables.containsKey(name)) {
+            variables.put(name, object);
+        } else {
+            Preconditions.checkState(parent != null);
+            parent.assign(name, object);
+        }
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof Scope o
+            && Objects.equals(parent, o.parent)
+            && variables.equals(o.variables);
+    }
+
+    @Override
+    public String toString() {
+        var builder = new StringBuilder();
+        builder.append("Scope[");
+        builder.append("parent=").append(parent).append(", ");
+        builder.append("variables=Map["); //format Map like record for prettify
+        variables.forEach((key, value) -> {
+            builder.append(key).append("=").append(value).append(", ");
+        });
+        builder.append("]");
+        return builder.toString();
+    }
+
+    //IMPORTANT: For use in RuntimeValue.print for objects, NOT the Evaluator!
+    public Map<String, RuntimeValue> collect() {
+        var map = parent != null ? parent.collect() : new LinkedHashMap<String, RuntimeValue>();
+        map.putAll(variables);
+        return map;
+    }
+
+}
