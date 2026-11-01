@@ -9,6 +9,7 @@ import java.math.RoundingMode;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ArrayList;
 
 public final class Evaluator implements Ast.Visitor<RuntimeValue, EvaluateException> {
 
@@ -49,42 +50,88 @@ public final class Evaluator implements Ast.Visitor<RuntimeValue, EvaluateExcept
 
     @Override
     public RuntimeValue visit(Ast.Stmt.Def ast) throws EvaluateException {
-        var function = new RuntimeValue.Function(ast.name(),arguments -> {
-            return new RuntimeValue.Primitive(null);
+        Scope definingScope = scope;
+        if (ast.parameters().stream().distinct().count() != ast.parameters().size()) {
+            throw new EvaluateException("Duplicate parameter", Optional.of(ast));
+        }
+
+        RuntimeValue.Function function = new RuntimeValue.Function(ast.name(), arguments -> {
+            if (arguments.size() != ast.parameters().size()) {
+                throw new EvaluateException("Incorrect number of arguments", Optional.of(ast));
+            }
+            Scope previousScope = scope;
+            scope = new Scope(definingScope);
+            try {
+                for (int i = 0; i < arguments.size(); i++) {
+                    scope.define(ast.parameters().get(i), arguments.get(i));
+                }
+                try {
+                    RuntimeValue result = new RuntimeValue.Primitive(null);
+                    for (var statement : ast.body()) {
+                        result = visit(statement);
+                    }
+                    return result;
+                } catch (ReturnException e) {
+                    return e.getValue();
+                }
+            } finally {
+                scope = previousScope;
+            }
         });
-        scope.define(ast.name(),function);
+        scope.define(ast.name(), function);
         return function;
     }
 
-    @Override
-    public RuntimeValue visit(Ast.Stmt.If ast) throws EvaluateException {
-        var cond = visit(ast.condition());
-        if(!(cond instanceof RuntimeValue.Primitive(Boolean value))){
-            throw new EvaluateException("If condition must be Boolean",Optional.of(ast.condition()));
-        }
-        var statements = value ? ast.thenBody() : ast.elseBody();
-        Scope prev_scope = scope;
-        scope = new Scope(prev_scope);
-
-        try{
-            RuntimeValue result = new RuntimeValue.Primitive(null);
-            for(var statement: statements){
-                result = visit(statement);
+        @Override
+        public RuntimeValue visit (Ast.Stmt.If ast) throws EvaluateException {
+            var cond = visit(ast.condition());
+            if (!(cond instanceof RuntimeValue.Primitive(Boolean value))) {
+                throw new EvaluateException("If condition must be Boolean", Optional.of(ast.condition()));
             }
-            return result;
-        } finally{
-            scope = prev_scope;
-        }
-    }
+            var statements = value ? ast.thenBody() : ast.elseBody();
+            Scope prev_scope = scope;
+            scope = new Scope(prev_scope);
 
-    @Override
-    public RuntimeValue visit(Ast.Stmt.For ast) throws EvaluateException {
-        throw new UnsupportedOperationException("TODO"); //TODO
-    }
+            try {
+                RuntimeValue result = new RuntimeValue.Primitive(null);
+                for (var statement : statements) {
+                    result = visit(statement);
+                }
+                return result;
+            } finally {
+                scope = prev_scope;
+            }
+        }
+
+        @Override
+        public RuntimeValue visit (Ast.Stmt.For ast) throws EvaluateException {
+            var iterable = visit(ast.expression());
+            if (!(iterable instanceof RuntimeValue.Primitive primitive)
+                    || !(primitive.value() instanceof Iterable<?> values)) {
+                throw new EvaluateException("For expression must be iterable", Optional.of(ast.expression()));
+            }
+            for (var element : values) {
+                if (!(element instanceof RuntimeValue value)) {
+                    throw new EvaluateException("Invalid iterable element", Optional.of(ast));
+                }
+                Scope previousScope = scope;
+                scope = new Scope(previousScope);
+                try {
+                    scope.define(ast.name(), value);
+                    for (var statement : ast.body()) {
+                        visit(statement);
+                    }
+                } finally {
+                    scope = previousScope;
+                }
+            }
+            return new RuntimeValue.Primitive(null);
+        }
 
     @Override
     public RuntimeValue visit(Ast.Stmt.Return ast) throws EvaluateException {
-        throw new UnsupportedOperationException("TODO"); //TODO
+        RuntimeValue value = ast.value().isPresent() ? visit(ast.value().get()) : new RuntimeValue.Primitive(null);
+        throw new ReturnException(value);
     }
 
     @Override
@@ -266,14 +313,15 @@ public final class Evaluator implements Ast.Visitor<RuntimeValue, EvaluateExcept
 
     @Override
     public RuntimeValue visit(Ast.Expr.Function ast) throws EvaluateException {
-        //TODO: Replace with a complete implementation with error handling.
-        if (ast.name().equals("log")) {
-            var value = scope.resolve("log").get(); //Unsafe!
-            var function = (RuntimeValue.Function) value; //Unsafe!
-            var argument = visit(ast.arguments().getFirst()); //Unsafe!
-            return function.definition().invoke(List.of(argument));
-        }
-        throw new UnsupportedOperationException("TODO"); //TODO
+            var value = scope.resolve(ast.name());
+            if (value.isEmpty() || !(value.get() instanceof RuntimeValue.Function function)) {
+                throw new EvaluateException("Function not found: " + ast.name(), Optional.of(ast));
+            }
+            List<RuntimeValue> arguments = new ArrayList<>();
+            for (var argument : ast.arguments()) {
+                arguments.add(visit(argument));
+            }
+            return function.definition().invoke(arguments);
     }
 
     @Override
@@ -289,7 +337,26 @@ public final class Evaluator implements Ast.Visitor<RuntimeValue, EvaluateExcept
     public static class EnvironmentHooks {
 
         public static RuntimeValue range(List<RuntimeValue> arguments) throws EvaluateException {
-            throw new UnsupportedOperationException("TODO"); //TODO
+            if (arguments.size() != 2) {
+                throw new EvaluateException("range requires two arguments", Optional.empty());
+            }
+            if (!(arguments.get(0) instanceof RuntimeValue.Primitive(BigInteger start))) {
+                throw new EvaluateException("Start must be an integer", Optional.empty());
+            }
+            if (!(arguments.get(1) instanceof RuntimeValue.Primitive(BigInteger end))) {
+                throw new EvaluateException("End must be an integer", Optional.empty());
+            }
+            if (start.compareTo(end) > 0) {
+                throw new EvaluateException("Start cannot be greater than end", Optional.empty());
+            }
+
+            List<RuntimeValue> values = new ArrayList<>();
+
+            for (BigInteger i = start; i.compareTo(end) < 0; i = i.add(BigInteger.ONE)) {
+                values.add(new RuntimeValue.Primitive(i));
+            }
+
+            return new RuntimeValue.Primitive(values);
         }
 
         public static RuntimeValue isinstance(List<RuntimeValue> arguments) throws EvaluateException {
@@ -298,4 +365,16 @@ public final class Evaluator implements Ast.Visitor<RuntimeValue, EvaluateExcept
 
     }
 
+    private static class ReturnException extends RuntimeException {
+        private final RuntimeValue value;
+
+        public ReturnException(RuntimeValue value) {
+            this.value = value;
+        }
+        public RuntimeValue getValue() {
+            return value;
+        }
+    }
+
 }
+
